@@ -1,216 +1,144 @@
 import streamlit as st
-import itertools
-import random
 import math
-import time
 
-# ==========================================
-# 核心算法引擎 (GRASP + 逆向冗余剪枝)
-# ==========================================
-def generate_combinations(samples, r):
-    return list(itertools.combinations(sorted(samples), r))
+# 严格复用你原有的模块，不改变任何算法与底层逻辑
+from optimal_sample_selection.solver import estimate_coverage_entries, solve
+from optimal_sample_selection.storage import (
+    delete_result_file,
+    display_result_file,
+    list_result_files,
+    save_result,
+)
+from optimal_sample_selection.utils import (
+    LARGE_COMBINATION_WARNING_THRESHOLD,
+    choose_samples_randomly,
+    parse_user_samples,
+    validate_parameters,
+)
 
-def build_coverage_map(candidates, targets, s):
-    coverage_map = {}
-    target_sets = [(t, set(t)) for t in targets]
-    for candidate in candidates:
-        candidate_set = set(candidate)
-        covered_targets = set()
-        for target, target_set in target_sets:
-            if len(candidate_set & target_set) >= s:
-                covered_targets.add(target)
-        coverage_map[candidate] = covered_targets
-    return coverage_map
+# 页面基础配置：优化移动端显示比例
+st.set_page_config(page_title="最优样本选择系统", layout="centered", initial_sidebar_state="collapsed")
 
-def greedy_set_cover(candidates, targets, coverage_map, randomized=True, top_n=5):
-    uncovered_targets = set(targets)
-    selected_groups = []
-    selected_set = set()
-    ordered_candidates = sorted(candidates)
+st.title("最优样本选择系统")
 
-    while uncovered_targets:
-        scored_candidates = []
-        best_gain = 0
-        for candidate in ordered_candidates:
-            if candidate in selected_set:
-                continue
-            gain = len(coverage_map[candidate] & uncovered_targets)
-            if gain <= 0:
-                continue
-            if randomized:
-                scored_candidates.append((gain, candidate))
-                if gain > best_gain:
-                    best_gain = gain
-            else:
-                if gain > best_gain:
-                    best_gain = gain
-                    scored_candidates = [(gain, candidate)]
-                elif gain == best_gain:
-                    scored_candidates.append((gain, candidate))
-        
-        if not scored_candidates:
-            raise RuntimeError("无法覆盖所有目标，请检查参数组合。")
+# 使用移动端友好的标签页代替原本的数字菜单
+tab1, tab2 = st.tabs(["▶️ 运行新选择", "📁 历史结果管理"])
 
-        if randomized:
-            scored_candidates.sort(key=lambda item: (-item[0], item[1]))
-            top_candidates = scored_candidates[:max(1, top_n)]
-            _, chosen_candidate = random.choice(top_candidates)
-        else:
-            scored_candidates.sort(key=lambda item: item[1])
-            _, chosen_candidate = scored_candidates[0]
-
-        selected_groups.append(chosen_candidate)
-        selected_set.add(chosen_candidate)
-        uncovered_targets -= coverage_map[chosen_candidate]
-    return selected_groups
-
-def check_all_targets_covered(selected_groups, targets, s):
-    selected_group_sets = [set(g) for g in selected_groups]
-    for target in targets:
-        target_set = set(target)
-        if not any(len(target_set & g_set) >= s for g_set in selected_group_sets):
-            return False
-    return True
-
-def optimize_by_removing_redundant_groups(selected_groups, targets, s):
-    optimized_groups = list(selected_groups)
-    changed = True
-    while changed:
-        changed = False
-        for group in list(optimized_groups):
-            candidate_groups = [g for g in optimized_groups if g != group]
-            if candidate_groups and check_all_targets_covered(candidate_groups, targets, s):
-                optimized_groups = candidate_groups
-                changed = True
-                break
-    return sorted(optimized_groups)
-
-def solve(samples, k, j, s, runs=3):
-    started_at = time.perf_counter()
-    candidates = generate_combinations(samples, k)
-    targets = generate_combinations(samples, j)
-    coverage_map = build_coverage_map(candidates, targets, s)
-
-    best_result = None
+with tab1:
+    st.header("参数设置")
     
-    progress_bar = st.progress(0)
-    for run_index in range(1, runs + 1):
-        raw_result = greedy_set_cover(candidates, targets, coverage_map, randomized=True)
-        optimized_result = optimize_by_removing_redundant_groups(raw_result, targets, s)
-        
-        if best_result is None or len(optimized_result) < len(best_result):
-            best_result = optimized_result
-            
-        progress_bar.progress(run_index / runs)
-    progress_bar.empty()
+    # 移动端会自动将 columns 折叠为上下排列
+    col1, col2 = st.columns(2)
+    with col1:
+        m = st.number_input("m (样本池大小)", min_value=1, value=50, step=1)
+        n = st.number_input("n (抽取样本数)", min_value=1, value=10, step=1)
+        k = st.number_input("k (候选组合大小)", min_value=1, value=5, step=1)
+    with col2:
+        j = st.number_input("j (目标组合大小)", min_value=1, value=4, step=1)
+        s = st.number_input("s (覆盖重叠要求)", min_value=1, value=3, step=1)
 
-    elapsed_seconds = time.perf_counter() - started_at
-    stats = {
-        "candidate_count": len(candidates),
-        "target_count": len(targets),
-        "final_result_count": len(best_result),
-        "elapsed_seconds": elapsed_seconds
-    }
-    return best_result, stats
+    st.divider()
+    st.subheader("样本输入模式")
+    sample_mode = st.radio("请选择数据生成方式：", ["随机生成 n 个样本", "手动输入 n 个样本"])
 
-
-# ==========================================
-# Streamlit 前端交互界面 (支持全参数随机与手动)
-# ==========================================
-st.set_page_config(page_title="最优样本选择系统", layout="centered")
-
-st.title("🎯 最优样本选择系统 (Web版)")
-st.markdown("基于 **GRASP (贪心随机自适应搜索)** 与逆向剪枝优化的组合设计工具。")
-
-# --- 1. 参数状态初始化 (Session State) ---
-default_params = {'m': 45, 'n': 9, 'k': 6, 's': 5, 'j': 5}
-for key, val in default_params.items():
-    if key not in st.session_state:
-        st.session_state[key] = val
-
-def randomize_parameters():
-    st.session_state.m = random.randint(45, 54)
-    st.session_state.n = random.randint(7, 25)
-    st.session_state.k = random.randint(4, 7)
-    st.session_state.s = random.randint(3, st.session_state.k)
-    st.session_state.j = random.randint(st.session_state.s, st.session_state.k)
-    if 'samples' in st.session_state:
-        del st.session_state['samples']
-
-# --- 2. 侧边栏：参数输入区 ---
-st.sidebar.header("🛠️ 1. 参数设置 (m, n, k, j, s)")
-
-st.sidebar.button("🎲 一键随机生成所有参数", on_click=randomize_parameters, use_container_width=True)
-st.sidebar.markdown("---")
-st.sidebar.markdown("👉 **或者手动微调参数：**")
-
-m = st.sidebar.number_input("总体样本数 m (45-54)", 45, 54, key='m')
-n = st.sidebar.number_input("选择样本数 n (7-25)", 7, 25, key='n')
-k = st.sidebar.number_input("小组容量 k (4-7)", 4, 7, key='k')
-j = st.sidebar.number_input("覆盖参考值 j (s ≤ j ≤ k)", 3, k, key='j')
-s = st.sidebar.number_input("匹配要求 s (3-7)", 3, j, key='s')
-
-runs = st.sidebar.slider("算法迭代次数 (寻找更优解)", 1, 10, 3)
-
-# --- 3. 主界面：样本产生区 ---
-st.subheader(f"2. 确定初始样本池 (从 {m} 中产生 {n} 个)")
-input_mode = st.radio("选择样本产生方式", ["🎲 随机生成样本", "✍️ 手动输入样本"], horizontal=True)
-
-if "🎲 随机生成样本" in input_mode:
-    if st.button(f"生成 {n} 个随机样本"):
-        st.session_state['samples'] = sorted(random.sample(range(1, m + 1), n))
-else:
-    user_input = st.text_input(f"请输入 {n} 个数字（用空格分隔，范围 1-{m}）：")
-    if user_input:
-        try:
-            parsed_samples = sorted(list(set([int(x) for x in user_input.split()])))
-            if len(parsed_samples) == n and all(1 <= x <= m for x in parsed_samples):
-                st.session_state['samples'] = parsed_samples
-                st.success("样本解析成功！")
-            else:
-                st.error(f"请输入恰好 {n} 个不重复的数字，且范围在 1 到 {m} 之间。")
-        except ValueError:
-            st.error("输入格式有误，请确保输入的是纯数字。")
-
-# --- 4. 执行算法与展示结果 ---
-if 'samples' in st.session_state:
-    st.info(f"**当前选定样本池 (共 {n} 个):** \n {st.session_state['samples']}")
-    
-    st.subheader("3. 运行优化算法")
-    if st.button("🚀 开始执行最优选择", use_container_width=True):
-        
-        candidate_count = math.comb(n, k)
-        if candidate_count > 100000:
-            st.warning("⚠️ 当前参数组合空间极大，计算可能需要较长时间，请耐心等待...")
-            
-        with st.spinner("🧠 启发式算法计算中，正在寻找全局最优解..."):
+    samples = []
+    if sample_mode == "手动输入 n 个样本":
+        raw_samples = st.text_input(f"请输入 {n} 个数字（用空格隔开）：")
+        if raw_samples:
             try:
-                results, stats = solve(st.session_state['samples'], k, j, s, runs=runs)
-                st.success(f"✅ 计算完成！耗时: {stats['elapsed_seconds']:.3f} 秒")
-                
-                col1, col2, col3 = st.columns(3)
-                col1.metric("候选组合总数", stats['candidate_count'])
-                col2.metric("需要覆盖的目标数", stats['target_count'])
-                col3.metric("⭐ 最终精简组数", stats['final_result_count'])
-                
-                st.markdown("### 📊 最优组合结果")
-                result_text = ""
-                res_col1, res_col2 = st.columns(2)
-                for idx, res in enumerate(results):
-                    line = f"**组 {idx+1}:** {res}"
-                    if idx % 2 == 0:
-                        res_col1.markdown(line)
-                    else:
-                        res_col2.markdown(line)
-                    result_text += f"{idx+1}. {','.join(map(str, res))}\n"
-                
-                file_name = f"{m}-{n}-{k}-{j}-{s}-1-{len(results)}.txt"
-                st.download_button(
-                    label="📂 下载标准化 DB 结果文件",
-                    data=result_text,
-                    file_name=file_name,
-                    mime="text/plain",
-                    use_container_width=True
-                )
-            except Exception as e:
-                st.error(f"计算过程中发生错误: {str(e)}")
+                samples = parse_user_samples(raw_samples, m, n)
+                st.success(f"已成功解析样本: {samples}")
+            except ValueError as e:
+                st.error(f"样本输入错误: {e}")
+    else:
+        # 缓存随机结果，防止每次页面交互时样本乱跳
+        if st.button("生成随机样本预览"):
+            st.session_state['random_samples'] = choose_samples_randomly(m, n)
+            
+        if 'random_samples' in st.session_state:
+            samples = st.session_state['random_samples']
+            st.info(f"当前锁定的随机样本: {samples}")
+
+    st.divider()
+    st.subheader("算法选项")
+    randomized = st.toggle("启用 Randomized Greedy (随机贪心)?")
+    runs = 1
+    if randomized:
+        runs = st.number_input("运行次数 (Runs):", min_value=1, value=10, step=1)
+
+    st.write("") # 增加点击留白
+    if st.button("🚀 开始执行求解", type="primary", use_container_width=True):
+        try:
+            # 1. 验证参数
+            validate_parameters(m, n, k, j, s)
+
+            if not samples:
+                if sample_mode == "随机生成 n 个样本":
+                    samples = choose_samples_randomly(m, n)
+                else:
+                    st.warning("请先输入合法的样本数据。")
+                    st.stop()
+
+            # 2. 检查大计算量警告
+            candidate_count = math.comb(n, k)
+            target_count = math.comb(n, j)
+            estimated_entries = estimate_coverage_entries(n, k, j, s)
+
+            warning_msg = []
+            if candidate_count > LARGE_COMBINATION_WARNING_THRESHOLD:
+                warning_msg.append(f"候选组合数量较大 ({candidate_count})")
+            if target_count > LARGE_COMBINATION_WARNING_THRESHOLD:
+                warning_msg.append(f"目标组合数量较大 ({target_count})")
+            if estimated_entries > LARGE_COMBINATION_WARNING_THRESHOLD * 20:
+                warning_msg.append("预估覆盖图映射可能会消耗大量内存与时间")
+
+            if warning_msg:
+                st.warning("⚠️ 警告: " + "；".join(warning_msg) + "。正在强制运行中...")
+
+            # 3. 运行核心算法
+            with st.spinner('底层算法正在高强度运算中，请保持屏幕常亮...'):
+                results, stats = solve(samples, k, j, s, runs=runs, randomized=randomized)
+                file_path = save_result(m, n, k, j, s, samples, results, stats)
+
+            # 4. 展示结果
+            st.success("运算完成！")
+            
+            with st.expander("📊 查看算法统计数据", expanded=True):
+                st.json(stats)
+
+            st.write("### 最终结果组合")
+            for idx, grp in enumerate(results, start=1):
+                st.code(f"{idx}: " + " ".join(str(v) for v in grp))
+
+            st.info(f"结果已调用 storage.py 保存至: {file_path}")
+
+        except ValueError as e:
+            st.error(f"参数验证失败: {e}")
+        except Exception as e:
+            st.error(f"执行时发生底层错误: {e}")
+
+with tab2:
+    st.header("已保存的结果文件")
+    filenames = list_result_files()
+
+    if not filenames:
+        st.info("当前 data 目录下暂无历史结果。")
+    else:
+        selected_file = st.selectbox("选择要管理的文件：", filenames)
+
+        col_view, col_del = st.columns(2)
+        with col_view:
+            if st.button("📄 查看内容", use_container_width=True):
+                try:
+                    content = display_result_file(selected_file)
+                    st.text_area("文件内容 (只读)", content, height=400)
+                except Exception as e:
+                    st.error(f"读取失败: {e}")
+
+        with col_del:
+            if st.button("🗑️ 删除文件", type="primary", use_container_width=True):
+                try:
+                    delete_result_file(selected_file)
+                    st.success(f"文件 {selected_file} 已删除！(请切换一下标签页刷新列表)")
+                except Exception as e:
+                    st.error(f"删除失败: {e}")
