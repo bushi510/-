@@ -1,65 +1,41 @@
 import streamlit as st
 import math
-import sys
-import os
 
-# ====== 终极寻路补丁：强制把当前文件所在目录加入系统路径 ======
-current_dir = os.path.dirname(os.path.abspath(__file__))
-if current_dir not in sys.path:
-    sys.path.append(current_dir)
-# =========================================================
-
-from solver import estimate_coverage_entries, solve
-from storage import (
+# 恢复你最初正确的包导入方式！
+from optimal_sample_selection.solver import estimate_coverage_entries, solve
+from optimal_sample_selection.storage import (
     delete_result_file,
     display_result_file,
     list_result_files,
     save_result,
 )
-from utils import (
+from optimal_sample_selection.utils import (
     LARGE_COMBINATION_WARNING_THRESHOLD,
     choose_samples_randomly,
     parse_user_samples,
     validate_parameters,
 )
 
-# 页面基础配置：优化移动端显示比例
+# 下面是保留了完美 UI 优化的代码
 st.set_page_config(page_title="最优样本选择系统", layout="centered", initial_sidebar_state="collapsed")
 
 st.title("最优样本选择系统")
 
-# 使用移动端友好的标签页代替原本的数字菜单
 tab1, tab2 = st.tabs(["▶️ 运行新选择", "📁 历史结果管理"])
 
 with tab1:
     st.header("参数设置")
-    
-    # 添加一个温馨提示框，让界面看起来更专业
     st.info("💡 **系统约束说明：** 为防止 NP-Hard 问题引发的内存溢出，抽取样本数 (n) 已限制在 7-25 之间。")
 
-    # 移动端会自动将 columns 折叠为上下排列
     col1, col2 = st.columns(2)
     with col1:
-        m = st.number_input("m (样本池大小, m ≥ n)", 
-                            min_value=1, value=50, step=1,
-                            help="总样本池的大小，数学逻辑上必须大于或等于 n")
-                            
-        n = st.number_input("n (抽取样本数, 7 ≤ n ≤ 25)", 
-                            min_value=7, max_value=25, value=10, step=1,
-                            help="核心控制参数。受限于组合爆炸，系统硬性限制为 7 到 25 之间")
-                            
-        k = st.number_input("k (候选组合大小, k ≤ n)", 
-                            min_value=1, value=6, step=1,
-                            help="每个候选组包含的样本数量，不能超过抽取样本数 n")
+        m = st.number_input("m (样本池大小, m ≥ n)", min_value=1, value=50, step=1, help="总样本池的大小，数学逻辑上必须大于或等于 n")
+        n = st.number_input("n (抽取样本数, 7 ≤ n ≤ 25)", min_value=7, max_value=25, value=10, step=1, help="核心控制参数。受限于组合爆炸，系统硬性限制为 7 到 25 之间")
+        k = st.number_input("k (候选组合大小, k ≤ n)", min_value=1, value=6, step=1, help="每个候选组包含的样本数量，不能超过抽取样本数 n")
                             
     with col2:
-        j = st.number_input("j (目标组合大小, j < k)", 
-                            min_value=1, value=4, step=1,
-                            help="需要被覆盖的目标子集大小，必须小于候选组大小 k")
-                            
-        s = st.number_input("s (覆盖重叠要求, s ≤ j)", 
-                            min_value=1, value=3, step=1,
-                            help="每个目标子集必须满足的最小交集/重叠数，不能超过 j")
+        j = st.number_input("j (目标组合大小, j < k)", min_value=1, value=4, step=1, help="需要被覆盖的目标子集大小，必须小于候选组大小 k")
+        s = st.number_input("s (覆盖重叠要求, s ≤ j)", min_value=1, value=3, step=1, help="每个目标子集必须满足的最小交集/重叠数，不能超过 j")
 
     st.divider()
     st.subheader("样本输入模式")
@@ -75,10 +51,8 @@ with tab1:
             except ValueError as e:
                 st.error(f"样本输入错误: {e}")
     else:
-        # 缓存随机结果，防止每次页面交互时样本乱跳
         if st.button("生成随机样本预览"):
             st.session_state['random_samples'] = choose_samples_randomly(m, n)
-            
         if 'random_samples' in st.session_state:
             samples = st.session_state['random_samples']
             st.info(f"当前锁定的随机样本: {samples}")
@@ -90,10 +64,9 @@ with tab1:
     if randomized:
         runs = st.number_input("运行次数 (Runs):", min_value=1, value=10, step=1)
 
-    st.write("") # 增加点击留白
+    st.write("") 
     if st.button("🚀 开始执行求解", type="primary", use_container_width=True):
         try:
-            # 1. 验证参数
             validate_parameters(m, n, k, j, s)
 
             if not samples:
@@ -103,7 +76,6 @@ with tab1:
                     st.warning("请先输入合法的样本数据。")
                     st.stop()
 
-            # 2. 检查大计算量警告
             candidate_count = math.comb(n, k)
             target_count = math.comb(n, j)
             estimated_entries = estimate_coverage_entries(n, k, j, s)
@@ -119,12 +91,10 @@ with tab1:
             if warning_msg:
                 st.warning("⚠️ 警告: " + "；".join(warning_msg) + "。正在强制运行中...")
 
-            # 3. 运行核心算法
             with st.spinner('底层算法正在高强度运算中，请保持屏幕常亮...'):
                 results, stats = solve(samples, k, j, s, runs=runs, randomized=randomized)
                 file_path = save_result(m, n, k, j, s, samples, results, stats)
 
-            # 4. 展示结果
             st.success("运算完成！")
             
             with st.expander("📊 查看算法统计数据", expanded=True):
