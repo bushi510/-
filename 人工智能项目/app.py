@@ -1,7 +1,14 @@
 import streamlit as st
 import math
+import sys
+import os
 
-# 已经去掉了 optimal_sample_selection 前缀，确保本地绝对能跑通！
+# ====== 终极寻路补丁：强制把当前文件所在目录加入系统路径 ======
+current_dir = os.path.dirname(os.path.abspath(__file__))
+if current_dir not in sys.path:
+    sys.path.append(current_dir)
+# =========================================================
+
 from solver import estimate_coverage_entries, solve
 from storage import (
     delete_result_file,
